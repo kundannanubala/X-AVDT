@@ -1,3 +1,5 @@
+import collections
+
 import torch
 import torch.nn as nn
 from torchvision.transforms.functional import normalize
@@ -6,18 +8,15 @@ from torchvision.transforms.functional import normalize
 class ProjectionHead(nn.Module):
     """Projection head for the (triplet) contrastive embedding.
 
-    NOTE: the released checkpoint stores the inner Sequential weights under
-    indices `proj.0` and `proj.2` (i.e. a parameter-free layer sits at index 1).
-    We therefore use LayerNorm -> GELU -> Linear so the state_dict keys are
-    `proj.0.{weight,bias}` (LayerNorm) and `proj.2.{weight,bias}` (Linear),
-    matching `img_proj.*` / `attn_proj.*` in the checkpoint.
+    Matches the released sa_triplet_dec checkpoint (Google Drive model_best.pt):
+    Linear -> GELU -> Linear with state_dict keys proj.0 and proj.2.
     """
-    def __init__(self, in_dim=1024, proj_dim=512):
+    def __init__(self, in_dim=1024, hidden_dim=1024, proj_dim=1024):
         super().__init__()
         self.proj = nn.Sequential(
-            nn.LayerNorm(in_dim),   # proj.0
-            nn.GELU(),              # proj.1 (no params -> index 1 skipped in state_dict)
-            nn.Linear(in_dim, proj_dim),  # proj.2
+            nn.Linear(in_dim, hidden_dim),      # proj.0
+            nn.GELU(),                          # proj.1 (no params)
+            nn.Linear(hidden_dim, proj_dim),    # proj.2
         )
 
     def forward(self, x):
@@ -268,7 +267,7 @@ class Classifier(nn.Module):
         self_attn=True,
         norm_layer="batch",
         attn_in_channels=320,
-        proj_dim=512,
+        proj_dim=1024,
     ):
         super().__init__()
 
@@ -276,10 +275,8 @@ class Classifier(nn.Module):
         self.attn_encoder = get_feat_encoder(norm_type=norm_layer, in_channels_2d=attn_in_channels)  # -> (B,1024,T,H,W)
         self.decoder = get_feat_decoder(is_fuse=True, is_self_attn=self_attn)
 
-        # Triplet / contrastive projection heads (present in the released checkpoint
-        # as `img_proj.*` and `attn_proj.*`). Each head: 1024 -> proj_dim.
-        # The two projected vectors are concatenated to form the (2*proj_dim)-d
-        # embedding used by the contrastive loss (default 512*2 = 1024 == embedding_size).
+        # Triplet / contrastive projection heads (img_proj.* / attn_proj.* in checkpoint).
+        # Each head: 1024 -> 1024 -> 1024; concat embed dim = 2 * proj_dim (2048).
         self.pool = nn.AdaptiveAvgPool3d((1, 1, 1))
         self.img_proj = ProjectionHead(in_dim=1024, proj_dim=proj_dim)
         self.attn_proj = ProjectionHead(in_dim=1024, proj_dim=proj_dim)
@@ -296,3 +293,36 @@ class Classifier(nn.Module):
         embed = torch.cat([ei, ea], dim=1)             # (B, 2*proj_dim)
 
         return out, embed
+
+
+def prepare_checkpoint_state(ckpt_path):
+    ckpt = torch.load(ckpt_path, map_location="cpu")
+    state = ckpt.get("model", ckpt) if isinstance(ckpt, dict) else ckpt
+    return collections.OrderedDict(
+        (key[7:] if key.startswith("module.") else key, value) for key, value in state.items()
+    )
+
+
+def load_checkpoint_into_model(model, ckpt_path, strict=False, inference_only=False):
+    """Load a checkpoint, skipping keys with shape mismatches.
+
+    When inference_only=True, contrastive projection heads (img_proj / attn_proj)
+    are skipped because classification only uses the encoder + decoder path.
+    """
+    state = prepare_checkpoint_state(ckpt_path)
+    if inference_only:
+        state = {
+            key: value
+            for key, value in state.items()
+            if not (key.startswith("img_proj.") or key.startswith("attn_proj."))
+        }
+    else:
+        model_state = model.state_dict()
+        state = {
+            key: value
+            for key, value in state.items()
+            if key in model_state and model_state[key].shape == value.shape
+        }
+
+    missing, unexpected = model.load_state_dict(state, strict=strict)
+    return missing, unexpected

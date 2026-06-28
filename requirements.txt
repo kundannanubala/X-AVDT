@@ -22,4 +22,5 @@ onnxruntime-gpu
 audio-separator
 librosa
 soundfile
-moviepy
+moviepy<2.0
+xformers

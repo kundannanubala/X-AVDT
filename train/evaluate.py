@@ -12,7 +12,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from dataset import InversionDataset
-from utils.network import Classifier
+from utils.network import Classifier, load_checkpoint_into_model
 
 
 def parse_args():
@@ -77,18 +77,8 @@ def fmt4(value):
 
 
 def load_model(model, ckpt_path):
-    ckpt = torch.load(ckpt_path, map_location="cpu")
     print("Checkpoint:", ckpt_path)
-
-    state = ckpt.get("model", ckpt) if isinstance(ckpt, dict) else ckpt
-
-    new_state = collections.OrderedDict()
-    for key, value in state.items():
-        if key.startswith("module."):
-            key = key[7:]
-        new_state[key] = value
-
-    missing, unexpected = model.load_state_dict(new_state, strict=False)
+    missing, unexpected = load_checkpoint_into_model(model, ckpt_path, strict=False)
 
     if missing:
         print("[Warn] missing keys:", missing)

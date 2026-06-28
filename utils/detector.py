@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import collections
 import importlib.util
 import sys
 from pathlib import Path
@@ -17,17 +16,19 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 TRAIN_NETWORK = REPO_ROOT / "train" / "utils" / "network.py"
 
 
-def _load_classifier_class():
+def _load_network_module():
     spec = importlib.util.spec_from_file_location("xavdt_network", TRAIN_NETWORK)
     if spec is None or spec.loader is None:
         raise ImportError(f"Unable to load classifier module from {TRAIN_NETWORK}")
     module = importlib.util.module_from_spec(spec)
     sys.modules["xavdt_network"] = module
     spec.loader.exec_module(module)
-    return module.Classifier
+    return module
 
 
-Classifier = _load_classifier_class()
+_network_module = _load_network_module()
+Classifier = _network_module.Classifier
+load_checkpoint_into_model = _network_module.load_checkpoint_into_model
 
 from utils.packing import InferenceChunk  # noqa: E402
 
@@ -63,16 +64,9 @@ def load_classifier(ckpt_path: str | Path, norm: str = "batch", device: torch.de
     device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = Classifier(norm_layer=norm).to(device)
 
-    ckpt = torch.load(ckpt_path, map_location="cpu")
-    state = ckpt.get("model", ckpt) if isinstance(ckpt, dict) else ckpt
-
-    new_state = collections.OrderedDict()
-    for key, value in state.items():
-        if key.startswith("module."):
-            key = key[7:]
-        new_state[key] = value
-
-    missing, unexpected = model.load_state_dict(new_state, strict=False)
+    missing, unexpected = load_checkpoint_into_model(
+        model, ckpt_path, strict=False, inference_only=True
+    )
     if missing:
         print(f"[Warn] missing keys: {missing}")
     if unexpected:

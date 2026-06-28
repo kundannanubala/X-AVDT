@@ -12,7 +12,7 @@ from tqdm import tqdm
 
 from dataset import InversionDataset
 from utils.earlystop import EarlyStopping
-from utils.network import Classifier
+from utils.network import Classifier, load_checkpoint_into_model
 
 
 def seed_worker(worker_id):
@@ -97,8 +97,7 @@ def train(args):
         if match:
             resume_epoch = int(match.group(1)) + 1
 
-        state = torch.load(args.resume, map_location="cpu")
-        model.load_state_dict(state, strict=True)
+        load_checkpoint_into_model(model, args.resume, strict=False)
 
         print(f"Resumed from {args.resume}, start epoch {resume_epoch}")
 
