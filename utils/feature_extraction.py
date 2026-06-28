@@ -115,11 +115,10 @@ class HalloExtractor:
         ckpt_path = os.path.join(config.audio_ckpt_dir, "net.pth")
         missing, unexpected = self.net.load_state_dict(torch.load(ckpt_path, map_location="cpu"))
         if missing or unexpected:
-            raise RuntimeError(f"Failed to load Hallo checkpoint from {ckpt_path}")
-
-        self.vae = self.vae.to(self.device, dtype=weight_dtype)
-        self.net = self.net.to(self.device, dtype=weight_dtype)
-        self.net.eval()
+            raise RuntimeError(
+                f"Failed to load Hallo checkpoint from {ckpt_path}: "
+                f"missing={missing}, unexpected={unexpected}"
+            )
 
     @staticmethod
     def _resolve_weight_dtype(weight_dtype: str) -> torch.dtype:
@@ -153,7 +152,6 @@ class HalloExtractor:
             audio_emb, audio_length = audio_processor.preprocess(str(wav_path), clip_length)
         return self._ef.process_audio_emb(audio_emb), audio_length
 
-    @torch.inference_mode()
     def extract(self, frame_dir: str | Path, wav_path: str | Path) -> FeatureBundle:
         frame_dir = Path(frame_dir)
         wav_path = Path(wav_path)
@@ -163,7 +161,7 @@ class HalloExtractor:
 
         audio_emb, audio_length = self._prepare_audio(wav_path)
 
-        inverted_latents, _, z0, inverted_images, attn_feat = self._ef.inversion_process(
+        inverted_latents, _, _z0, inverted_images, attn_feat = self._ef.inversion_process(
             self.config,
             self.device,
             self.weight_dtype,
@@ -173,7 +171,13 @@ class HalloExtractor:
             self.vae,
             self.net,
         )
-        _, z0_recon, reconstructed_images = self._ef.reconstruction_process(
+        if attn_feat is None:
+            raise RuntimeError(
+                "Hallo inversion did not produce cross-attention features (attn_feat is None). "
+                "Check GPU/PyTorch compatibility or run hallo/extract_features.py on the same frames."
+            )
+
+        _, _z0_recon, reconstructed_images = self._ef.reconstruction_process(
             self.config,
             inverted_latents,
             self.device,
@@ -190,8 +194,6 @@ class HalloExtractor:
             len(inverted_images),
             len(reconstructed_images),
             attn_feat.shape[0],
-            z0.shape[2],
-            z0_recon.shape[2],
         )
         if min_len < self.config.data.n_sample_frames:
             raise ValueError(
