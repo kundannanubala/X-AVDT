@@ -46,7 +46,6 @@ hallo/.cache/
 *.npy
 *.npz
 *.mkv
-*.mp4
 *.avi
 *.mov
 *.webm
