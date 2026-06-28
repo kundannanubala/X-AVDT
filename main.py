@@ -17,7 +17,7 @@ if str(REPO_ROOT) not in sys.path:
 from utils.detector import load_classifier, score_video
 from utils.feature_extraction import HalloExtractor
 from utils.io import InferenceResults, VideoResult, build_meta, cleanup_work_dir, discover_videos, make_work_dir, write_results
-from utils.packing import pack_inference_chunks
+from utils.hallo_pack import pack_chunks_from_hallo_clip
 from utils.preprocessing import prepare_clip_frames
 
 
@@ -93,7 +93,7 @@ def main() -> None:
     try:
         for video_path in tqdm(videos, desc="Inferring"):
             try:
-                frame_dir, wav_path, _clip_id = prepare_clip_frames(
+                frame_dir, wav_path, clip_id = prepare_clip_frames(
                     video_path=video_path,
                     video_root=video_dir,
                     work_dir=work_dir,
@@ -101,8 +101,9 @@ def main() -> None:
                     size=size,
                     duration=duration,
                 )
-                features = hallo.extract(frame_dir=frame_dir, wav_path=wav_path)
-                chunks = pack_inference_chunks(features, clip_len=args.clip_len)
+                hallo_clip_dir = work_dir / "hallo_features" / clip_id
+                hallo.extract_to_dir(frame_dir=frame_dir, wav_path=wav_path, output_dir=hallo_clip_dir)
+                chunks = pack_chunks_from_hallo_clip(hallo_clip_dir, clip_len=args.clip_len)
                 if not chunks:
                     raise ValueError("No valid 16-frame chunks produced from extracted features.")
 

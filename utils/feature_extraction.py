@@ -21,30 +21,10 @@ if str(HALLO_ROOT) not in sys.path:
 
 @dataclass
 class FeatureBundle:
-    original: torch.Tensor  # (3, T, H, W) uint8
-    inverted: torch.Tensor
-    reconstructed: torch.Tensor
-    residual: torch.Tensor
+    original: List[Union[str, Image.Image]]
+    inverted: List[Union[str, Image.Image]]
+    reconstructed: List[Union[str, Image.Image]]
     attn_feat: torch.Tensor  # (T, 4096, 320)
-
-
-def _images_to_tensor(images: List[Union[str, Image.Image]]) -> torch.Tensor:
-    frames = []
-    for image in images:
-        if isinstance(image, Image.Image):
-            arr = np.asarray(image.convert("RGB"), dtype=np.uint8)
-        else:
-            with Image.open(image) as opened:
-                arr = np.asarray(opened.convert("RGB"), dtype=np.uint8)
-        frames.append(torch.from_numpy(arr).permute(2, 0, 1))
-    if not frames:
-        raise ValueError("No frames available to build a video tensor.")
-    return torch.stack(frames, dim=1).contiguous()
-
-
-def _compute_residual(original: torch.Tensor, reconstructed: torch.Tensor) -> torch.Tensor:
-    residual = torch.abs(original.float() - reconstructed.float())
-    return residual.clamp(0, 255).to(torch.uint8)
 
 
 class HalloExtractor:
@@ -201,15 +181,56 @@ class HalloExtractor:
                 f"need at least {self.config.data.n_sample_frames}."
             )
 
-        original_tensor = _images_to_tensor(source_image_path[:min_len])
-        inverted_tensor = _images_to_tensor(inverted_images[:min_len])
-        reconstructed_tensor = _images_to_tensor(reconstructed_images[:min_len])
-        residual_tensor = _compute_residual(original_tensor, reconstructed_tensor)
-
         return FeatureBundle(
-            original=original_tensor,
-            inverted=inverted_tensor,
-            reconstructed=reconstructed_tensor,
-            residual=residual_tensor,
+            original=source_image_path[:min_len],
+            inverted=inverted_images[:min_len],
+            reconstructed=reconstructed_images[:min_len],
             attn_feat=attn_feat[:min_len].detach().cpu(),
         )
+
+    def extract_to_dir(self, frame_dir: str | Path, wav_path: str | Path, output_dir: str | Path) -> Path:
+        """Run Hallo inversion/reconstruction and save outputs like hallo/extract_features.py."""
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        features = self.extract(frame_dir, wav_path)
+        min_len = min(
+            len(features.original),
+            len(features.inverted),
+            len(features.reconstructed),
+            features.attn_feat.shape[0],
+        )
+
+        saved = {
+            "original": features.original[:min_len],
+            "inverted": features.inverted[:min_len],
+            "reconstructed": features.reconstructed[:min_len],
+        }
+
+        for feat in ("original", "inverted", "reconstructed"):
+            video_path = output_dir / f"{feat}.mp4"
+            self._ef.save_video_from_images(saved[feat], str(video_path))
+
+        torch.save(features.attn_feat[:min_len].cpu(), output_dir / "attn_feat.pt")
+
+        residual_dir = output_dir / "residual"
+        residual_dir.mkdir(parents=True, exist_ok=True)
+        for i in range(min_len):
+            original = saved["original"][i]
+            reconstructed = saved["reconstructed"][i]
+            original = Image.open(original) if not isinstance(original, Image.Image) else original
+            reconstructed = Image.open(reconstructed) if not isinstance(reconstructed, Image.Image) else reconstructed
+            residual = np.abs(np.asarray(reconstructed, dtype=np.float32) - np.asarray(original, dtype=np.float32))
+            residual = np.clip(residual, 0, 255).astype(np.uint8)
+            Image.fromarray(residual).save(residual_dir / f"{i:04d}.png")
+
+        residual_video_path = output_dir / "residual.mp4"
+        self._ef.save_video_from_images(sorted(residual_dir.glob("*.png")), str(residual_video_path))
+        for png in residual_dir.glob("*.png"):
+            png.unlink()
+        try:
+            residual_dir.rmdir()
+        except OSError:
+            pass
+
+        return output_dir
