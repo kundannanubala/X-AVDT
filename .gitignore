@@ -32,6 +32,8 @@ outputs/
 # Data, generated media, and checkpoints
 /data/
 /datasets/
+models/*
+!models/.gitkeep
 pretrained_models/
 hallo/pretrained_models
 hallo/pretrained_models/
